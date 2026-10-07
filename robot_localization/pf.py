@@ -81,6 +81,8 @@ class ParticleFilter(Node):
         self.d_thresh = 0.2             # the amount of linear movement before performing an update
         self.a_thresh = math.pi/6       # the amount of angular movement before performing an update
 
+        self.sigma = 0.25               # added to change how picky we want the filter to be
+
         # TODO: define additional constants if needed
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
@@ -225,12 +227,39 @@ class ParticleFilter(Node):
         # TODO: fill out the rest of the implementation
 
     def update_particles_with_laser(self, r, theta):
-        """ Updates the particle weights in response to the scan data
+        """ Updates the particle weights in response to the scan data. Uses
+            the real Neato's closest object in the Neato's body frame. Projects 
+            that data onto each particle in the map frame. Then, it checks how 
+            close the guess really was to a real obstacle on the map. 
             r: the distance readings to obstacles
             theta: the angle relative to the robot frame for each corresponding reading 
         """
-        # TODO: implement this
-        pass
+        #find the closest obj in the real Neato's scan
+        closest_dist = None
+        closest_angle = None
+        for dist, angle in zip(r, theta): #combine r and theta to go through
+            if math.isinf(dist) or math.isnan(dist) or dist <= 0.0: #skips over nonsense readings from LIDAR
+                continue
+            if closest_dist is None or dist < closest_dist:
+                closest_dist = dist
+                closest_angle = angle
+
+        if closest_dist is None: #does nothing if can't find a closest dist
+            return
+
+        for particle in self.particle_cloud:
+            #project the real neato's closest reading using a particle's pose/heading
+            angle_map = particle.theta + closest_angle
+            x = particle.x + closest_dist *math.cos(angle_map)
+            y = particle.y + closest_dist *math.sin(angle_map)
+
+            obstacle_dist = self.occupancy_field.get_closest_obstacle_distance(x, y)
+            if math.isnan(obstacle_dist):
+                obstacle_dist = self.sigma * 7 #sigma times a large int to penalize points no longer in map
+
+            #turn everything into a normal distribution
+            particle.weight = math.exp(-(obstacle_dist **2)/ (2* self.sigma **2))
+
 
     def update_initial_pose(self, msg):
         """ Callback function to handle re-initializing the particle filter based on a pose estimate.
@@ -254,7 +283,18 @@ class ParticleFilter(Node):
     def normalize_particles(self):
         """ Make sure the particle weights define a valid distribution (i.e. sum to 1.0) """
         # TODO: implement this
-        pass
+        total_weight = sum(p.weight for p in self.particle_cloud) #adds up raw weight
+
+        if total_weight == 0.0: 
+        #if particles get a weight of 0 bc sigma is too tight/small, give each particle the same weight to keep node running
+            normalized_weight = 1.0/ len(self.particle_cloud)
+            for p in self.particle_cloud:
+                p.weight = normalized_weight
+            return
+
+        #normal case: divides each particle's weight by sum to equal 1.0
+        for p in self.particle_cloud:
+            p.w /= total_weight
 
     def publish_particles(self, timestamp):
         msg = ParticleCloud()
