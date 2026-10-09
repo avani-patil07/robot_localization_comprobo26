@@ -83,7 +83,11 @@ class ParticleFilter(Node):
 
         self.sigma = 0.25               # added to change how picky we want the filter to be
 
-        # TODO: define additional constants if needed
+        # define additional constants if needed
+        # TODO: make these ROS parameters later
+        self.init_xy_sigma = 0.3                  # std dev (m) of initial x/y spread around the guess
+        self.init_theta_sigma = math.radians(20)  # std dev (rad) of initial heading spread
+
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -258,7 +262,7 @@ class ParticleFilter(Node):
                 obstacle_dist = self.sigma * 7 #sigma times a large int to penalize points no longer in map
 
             #turn everything into a normal distribution
-            particle.weight = math.exp(-(obstacle_dist **2)/ (2* self.sigma **2))
+            particle.w = math.exp(-(obstacle_dist **2)/ (2* self.sigma **2))
 
 
     def update_initial_pose(self, msg):
@@ -275,7 +279,15 @@ class ParticleFilter(Node):
         if xy_theta is None:
             xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
         self.particle_cloud = []
-        # TODO create particles
+        # create particles
+        x0, y0, theta0 = xy_theta # unpacks the guess 
+        for _ in range(self.n_particles):
+            # draws one random sample from a gaussian
+            x = np.random.normal(x0, self.init_xy_sigma)
+            y = np.random.normal(y0, self.init_xy_sigma)
+            theta = np.random.normal(theta0, self.init_theta_sigma)
+            theta = self.transform_helper.angle_normalize(theta)
+            self.particle_cloud.append(Particle(x=x, y=y, theta=theta, w=1.0)) # gives every particle same weight
 
         self.normalize_particles()
         self.update_robot_pose()
@@ -283,13 +295,13 @@ class ParticleFilter(Node):
     def normalize_particles(self):
         """ Make sure the particle weights define a valid distribution (i.e. sum to 1.0) """
         # TODO: implement this
-        total_weight = sum(p.weight for p in self.particle_cloud) #adds up raw weight
+        total_weight = sum(p.w for p in self.particle_cloud) #adds up raw weight
 
         if total_weight == 0.0: 
         #if particles get a weight of 0 bc sigma is too tight/small, give each particle the same weight to keep node running
             normalized_weight = 1.0/ len(self.particle_cloud)
             for p in self.particle_cloud:
-                p.weight = normalized_weight
+                p.w = normalized_weight
             return
 
         #normal case: divides each particle's weight by sum to equal 1.0
