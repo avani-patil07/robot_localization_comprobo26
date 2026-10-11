@@ -187,11 +187,27 @@ class ParticleFilter(Node):
                 (1): compute the mean pose
                 (2): compute the most likely pose (i.e. the mode of the distribution)
         """
+        if not self.particle_cloud: return
         # first make sure that the particle weights are normalized
         self.normalize_particles()
 
-        # TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
+        # assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
         # just to get started we will fix the robot's pose to always be at the origin
+
+        # weighted mean of x and y the weights alr sum to 1
+        x_mean = sum(p.w * p.x for p in self.particle_cloud)
+        y_mean = sum(p.w * p,y for p in self.particle_cloud)
+
+        # circular mean of theta -- average the unit vectors then take their angle
+        sin_sum = sum(p.w * math.sin(p.theta) for p in self.particle_cloud)
+        cos_sum = sum(p,w * math.cos(p.theta) for p in self.particle_cloud)
+        theta_mean = math.atan2(sin_sum, cos_sum)
+
+        # reuse Particle.as_pose() to build the geometry_msgs/Pose
+        # handles the quaternion math victora told us about
+        self.robot_pose = Particle(x=x_mean, y=y_mean, theta=theta_mean).as_pose()
+
+        # passes robot_pose to fix_map_to_odom_transform
         self.robot_pose = Pose()
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
@@ -295,6 +311,7 @@ class ParticleFilter(Node):
     def normalize_particles(self):
         """ Make sure the particle weights define a valid distribution (i.e. sum to 1.0) """
         # TODO: implement this
+        if not self.particle_cloud: return
         total_weight = sum(p.w for p in self.particle_cloud) #adds up raw weight
 
         if total_weight == 0.0: 
