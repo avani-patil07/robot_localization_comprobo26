@@ -19,6 +19,7 @@ from occupancy_field import OccupancyField
 from helper_functions import TFHelper
 from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
+from helper_functions import draw_random_sample, TFHelper
 
 class Particle(object):
     """ Represents a hypothesis (particle) of the robot's pose consisting of x,y and theta (yaw)
@@ -83,11 +84,14 @@ class ParticleFilter(Node):
 
         self.sigma = 0.25               # added to change how picky we want the filter to be
 
+        self.resample_xy_sigma = 0.05  #5 cm of variance in x/y when resampling
+        self.resample_theta_sigma = math.radians(5) #5 degrees of variance in theta when resampling
+        self.random_frac = 0.05 #5% of particles are random to avoid particle death
+
         # define additional constants if needed
         # TODO: make these ROS parameters later
         self.init_xy_sigma = 0.3                  # std dev (m) of initial x/y spread around the guess
         self.init_theta_sigma = math.radians(20)  # std dev (rad) of initial heading spread
-
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -109,6 +113,7 @@ class ParticleFilter(Node):
 
         self.current_odom_xy_theta = []
         self.occupancy_field = OccupancyField(self)
+        self.map_frame = self.occupancy_field.get_obstacle_bounding_box()  # get the map frame from the occupancy field
         self.transform_helper = TFHelper(self)
 
         # we are using a thread to work around single threaded execution bottleneck
@@ -236,6 +241,18 @@ class ParticleFilter(Node):
 
         # TODO: modify particles using delta
 
+    def make_random_particles(self):
+        """Returns a particle randomly placed in map with random heading"""
+        (x_min, x_max), (y_min, y_max) = self.map_bounds
+        while True:
+            x = np.random.uniform(x_min, x_max)
+            y = np.random.uniform(y_min, y_max)
+            dist = self.occupancy_field.get_closest_obstacle_distance(x, y)
+
+            if not math.isnan(dist) and dist >0.0:
+                theta = np.random.uniform(-math.pi, math.pi)
+                return Particle(x=x, y=y, theta=theta, w=1.0/self.n_particles)
+
     def resample_particles(self):
         """ Resample the particles according to the new particle weights.
             The weights stored with each particle should define the probability that a particular
@@ -244,7 +261,26 @@ class ParticleFilter(Node):
         """
         # make sure the distribution is normalized
         self.normalize_particles()
-        # TODO: fill out the rest of the implementation
+
+        n_random = int(self.random_frac * self.n_particles)
+        n_sampled = self.n_particles - n_random
+
+        weights = []
+        for p in self.particle_cloud:
+            weights.append(p.w)
+
+        new_cloud = draw_random_sample(self.particle_cloud, weights, self.n_sampled)
+
+        for p in new_cloud:
+            p.x += np.random.normal(0, self.resample_xy_sigma)
+            p.y += np.random.normal(0, self.resample_xy_sigma)
+            p.theta = self.transform_helper.angle_normalize(p.theta + np.random.normal(0.0, self.resample_theta_sigma))
+            p.w = 1.0 / self.n_particles  # reset weights to uniform distribution
+
+        for _ in range(n_random):
+            new_cloud.append(self.make_random_particles())
+
+        self.particle_cloud = new_cloud
 
     def update_particles_with_laser(self, r, theta):
         """ Updates the particle weights in response to the scan data. Uses
