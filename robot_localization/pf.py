@@ -83,10 +83,11 @@ class ParticleFilter(Node):
 
         self.sigma = 0.25               # added to change how picky we want the filter to be
 
-        self.init_xy_std = 0.4          # meters (change this in case of particle depletion)
-        self.init_theta_std = 0.4       # in radians (change this in case of particle depletion)
+        # define additional constants if needed
+        # TODO: make these ROS parameters later
+        self.init_xy_sigma = 0.3                  # std dev (m) of initial x/y spread around the guess
+        self.init_theta_sigma = math.radians(20)  # std dev (rad) of initial heading spread
 
-        # TODO: define additional constants if needed
 
         # pose_listener responds to selection of a new approximate robot location (for instance using rviz)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.update_initial_pose, 10)
@@ -186,11 +187,27 @@ class ParticleFilter(Node):
                 (1): compute the mean pose
                 (2): compute the most likely pose (i.e. the mode of the distribution)
         """
+        if not self.particle_cloud: return
         # first make sure that the particle weights are normalized
         self.normalize_particles()
 
-        # TODO: assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
+        # assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
         # just to get started we will fix the robot's pose to always be at the origin
+
+        # weighted mean of x and y the weights alr sum to 1
+        x_mean = sum(p.w * p.x for p in self.particle_cloud)
+        y_mean = sum(p.w * p.y for p in self.particle_cloud)
+
+        # circular mean of theta -- average the unit vectors then take their angle
+        sin_sum = sum(p.w * math.sin(p.theta) for p in self.particle_cloud)
+        cos_sum = sum(p.w * math.cos(p.theta) for p in self.particle_cloud)
+        theta_mean = math.atan2(sin_sum, cos_sum)
+
+        # reuse Particle.as_pose() to build the geometry_msgs/Pose
+        # handles the quaternion math victora told us about
+        self.robot_pose = Particle(x=x_mean, y=y_mean, theta=theta_mean).as_pose()
+
+        # passes robot_pose to fix_map_to_odom_transform
         self.robot_pose = Pose()
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
@@ -287,9 +304,15 @@ class ParticleFilter(Node):
 
         #goes through the x,y,theta and creates a particle for each one and adds it to the particle cloud
         self.particle_cloud = []
-        for x, y, theta in zip(xs, ys, thetas):
-            p = Particle(x=float(x), y=float(y), theta=float(theta), w=1.0)
-            self.particle_cloud.append(p)
+        # create particles
+        x0, y0, theta0 = xy_theta # unpacks the guess 
+        for _ in range(self.n_particles):
+            # draws one random sample from a gaussian
+            x = np.random.normal(x0, self.init_xy_sigma)
+            y = np.random.normal(y0, self.init_xy_sigma)
+            theta = np.random.normal(theta0, self.init_theta_sigma)
+            theta = self.transform_helper.angle_normalize(theta)
+            self.particle_cloud.append(Particle(x=x, y=y, theta=theta, w=1.0)) # gives every particle same weight
 
         self.normalize_particles()
         self.update_robot_pose()
@@ -297,6 +320,7 @@ class ParticleFilter(Node):
     def normalize_particles(self):
         """ Make sure the particle weights define a valid distribution (i.e. sum to 1.0) """
         # TODO: implement this
+        if not self.particle_cloud: return
         total_weight = sum(p.w for p in self.particle_cloud) #adds up raw weight
 
         if total_weight == 0.0: 
