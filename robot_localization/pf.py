@@ -19,7 +19,7 @@ from occupancy_field import OccupancyField
 from helper_functions import TFHelper
 from rclpy.qos import qos_profile_sensor_data
 from angle_helpers import quaternion_from_euler
-from helper_functions import draw_random_sample, TFHelper
+from helper_functions import draw_random_sample
 
 class Particle(object):
     """ Represents a hypothesis (particle) of the robot's pose consisting of x,y and theta (yaw)
@@ -87,6 +87,8 @@ class ParticleFilter(Node):
         self.resample_xy_sigma = 0.05  #5 cm of variance in x/y when resampling
         self.resample_theta_sigma = math.radians(5) #5 degrees of variance in theta when resampling
         self.random_frac = 0.05 #5% of particles are random to avoid particle death
+        self.cluster_radius = 0.5   # (m) particles within this distance of the best one count toward the estimate
+
 
         # define additional constants if needed
         # TODO: make these ROS parameters later
@@ -113,7 +115,7 @@ class ParticleFilter(Node):
 
         self.current_odom_xy_theta = []
         self.occupancy_field = OccupancyField(self)
-        self.map_frame = self.occupancy_field.get_obstacle_bounding_box()  # get the map frame from the occupancy field
+        self.map_bounds = self.occupancy_field.get_obstacle_bounding_box()  # ((x_min, x_max), (y_min, y_max)) of the map's obstacles
         self.transform_helper = TFHelper(self)
 
         # we are using a thread to work around single threaded execution bottleneck
@@ -199,21 +201,31 @@ class ParticleFilter(Node):
         # assign the latest pose into self.robot_pose as a geometry_msgs.Pose object
         # just to get started we will fix the robot's pose to always be at the origin
 
-        # weighted mean of x and y the weights alr sum to 1
-        x_mean = sum(p.w * p.x for p in self.particle_cloud)
-        y_mean = sum(p.w * p.y for p in self.particle_cloud)
+                # find the single best particle (the peak of the distribution)
+        best = max(self.particle_cloud, key=lambda p: p.w)
 
-        # circular mean of theta -- average the unit vectors then take their angle
-        sin_sum = sum(p.w * math.sin(p.theta) for p in self.particle_cloud)
-        cos_sum = sum(p.w * math.cos(p.theta) for p in self.particle_cloud)
+        # keep only particles near the best one, so a split cloud doesn't average
+        # two clusters into a pose between them (possibly inside a wall)
+        cluster = [p for p in self.particle_cloud
+                   if math.hypot(p.x - best.x, p.y - best.y) < self.cluster_radius]
+        cluster_w = sum(p.w for p in cluster)
+
+        # weighted mean of x and y over the cluster (divide by cluster_w since
+        # the cluster's weights alone don't sum to 1)
+        x_mean = sum(p.w * p.x for p in cluster) / cluster_w
+        y_mean = sum(p.w * p.y for p in cluster) / cluster_w
+
+        # circular mean of theta average the unit vectors then take their angle
+        sin_sum = sum(p.w * math.sin(p.theta) for p in cluster)
+        cos_sum = sum(p.w * math.cos(p.theta) for p in cluster)
         theta_mean = math.atan2(sin_sum, cos_sum)
+
 
         # reuse Particle.as_pose() to build the geometry_msgs/Pose
         # handles the quaternion math victora told us about
         self.robot_pose = Particle(x=x_mean, y=y_mean, theta=theta_mean).as_pose()
 
         # passes robot_pose to fix_map_to_odom_transform
-        self.robot_pose = Pose()
         if hasattr(self, 'odom_pose'):
             self.transform_helper.fix_map_to_odom_transform(self.robot_pose,
                                                             self.odom_pose)
@@ -269,7 +281,7 @@ class ParticleFilter(Node):
         for p in self.particle_cloud:
             weights.append(p.w)
 
-        new_cloud = draw_random_sample(self.particle_cloud, weights, self.n_sampled)
+        new_cloud = draw_random_sample(self.particle_cloud, weights, n_sampled)
 
         for p in new_cloud:
             p.x += np.random.normal(0, self.resample_xy_sigma)
@@ -330,15 +342,6 @@ class ParticleFilter(Node):
                       particle cloud around.  If this input is omitted, the odometry will be used """
         if xy_theta is None:
             xy_theta = self.transform_helper.convert_pose_to_xy_and_theta(self.odom_pose)
-
-        x0, y0, theta0 = xy_theta #unpack the tuple into x0, y0, theta0
-
-        #creates a normal distribution of x,y,theta values around the given mean with the given std
-        xs = np.random.normal(x0, self.init_xy_std, self.n_particles) 
-        ys = np.random.normal(y0, self.init_xy_std, self.n_particles)
-        thetas = np.random.normal(theta0, self.init_theta_std, self.n_particles)
-
-        #goes through the x,y,theta and creates a particle for each one and adds it to the particle cloud
         self.particle_cloud = []
         # create particles
         x0, y0, theta0 = xy_theta # unpacks the guess 
