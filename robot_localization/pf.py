@@ -88,6 +88,9 @@ class ParticleFilter(Node):
         self.resample_theta_sigma = math.radians(5) #5 degrees of variance in theta when resampling
         self.random_frac = 0.05 #5% of particles are random to avoid particle death
         self.cluster_radius = 0.5   # (m) particles within this distance of the best one count toward the estimate
+        self.odom_xy_noise = 0.02                 # std dev (m) of per-particle motion noise
+        self.odom_theta_noise = math.radians(3)   # std dev (rad) of per-particle turn noise
+        self.beam_step = 10   # use every 10th lidar beam when weighting particles
 
 
         # define additional constants if needed
@@ -242,16 +245,32 @@ class ParticleFilter(Node):
         # compute the change in x,y,theta since our last update
         if self.current_odom_xy_theta:
             old_odom_xy_theta = self.current_odom_xy_theta
-            delta = (new_odom_xy_theta[0] - self.current_odom_xy_theta[0],
-                     new_odom_xy_theta[1] - self.current_odom_xy_theta[1],
-                     new_odom_xy_theta[2] - self.current_odom_xy_theta[2])
+            x1, y1, theta1 = old_odom_xy_theta
+            x2, y2, theta2 = new_odom_xy_theta
+
+            # odom-frame displacement -> robot body frame (rotate by -theta1)
+            dx_odom = x2 - x1
+            dy_odom = y2 - y1
+            forward = math.cos(theta1) * dx_odom + math.sin(theta1) * dy_odom
+            left = -math.sin(theta1) * dx_odom + math.cos(theta1) * dy_odom
+            d_theta = self.transform_helper.angle_diff(theta2, theta1)
 
             self.current_odom_xy_theta = new_odom_xy_theta
         else:
             self.current_odom_xy_theta = new_odom_xy_theta
             return
 
-        # TODO: modify particles using delta
+        for p in self.particle_cloud:
+            # each particle gets a slightly different noisy version of the motion
+            f = forward + np.random.normal(0, self.odom_xy_noise)
+            l = left + np.random.normal(0, self.odom_xy_noise)
+            dt = d_theta + np.random.normal(0, self.odom_theta_noise)
+
+            # replay the body-frame motion from this particle's own heading
+            p.x += f * math.cos(p.theta) - l * math.sin(p.theta)
+            p.y += f * math.sin(p.theta) + l * math.cos(p.theta)
+            p.theta = self.transform_helper.angle_normalize(p.theta + dt)
+
 
     def make_random_particles(self):
         """Returns a particle randomly placed in map with random heading"""
@@ -302,31 +321,30 @@ class ParticleFilter(Node):
             r: the distance readings to obstacles
             theta: the angle relative to the robot frame for each corresponding reading 
         """
-        #find the closest obj in the real Neato's scan
-        closest_dist = None
-        closest_angle = None
-        for dist, angle in zip(r, theta): #combine r and theta to go through
-            if math.isinf(dist) or math.isnan(dist) or dist <= 0.0: #skips over nonsense readings from LIDAR
-                continue
-            if closest_dist is None or dist < closest_dist:
-                closest_dist = dist
-                closest_angle = angle
-
-        if closest_dist is None: #does nothing if can't find a closest dist
+        # keep every beam_step-th valid beam 
+        beams = [(dist, angle) for dist, angle in zip(r, theta)
+                 if not (math.isinf(dist) or math.isnan(dist) or dist <= 0.0)]
+        beams = beams[::self.beam_step]
+        if not beams:  # does nothing if no valid readings
             return
 
         for particle in self.particle_cloud:
-            #project the real neato's closest reading using a particle's pose/heading
-            angle_map = particle.theta + closest_angle
-            x = particle.x + closest_dist *math.cos(angle_map)
-            y = particle.y + closest_dist *math.sin(angle_map)
+            total = 0.0
+            for dist, angle in beams:
+                # project this beam's endpoint into the map from the particle's pose/heading
+                angle_map = particle.theta + angle
+                x = particle.x + dist * math.cos(angle_map)
+                y = particle.y + dist * math.sin(angle_map)
 
-            obstacle_dist = self.occupancy_field.get_closest_obstacle_distance(x, y)
-            if math.isnan(obstacle_dist):
-                obstacle_dist = self.sigma * 7 #sigma times a large int to penalize points no longer in map
+                obstacle_dist = self.occupancy_field.get_closest_obstacle_distance(x, y)
+                if math.isnan(obstacle_dist):
+                    obstacle_dist = self.sigma * 7  # penalize endpoints that land off the map
 
-            #turn everything into a normal distribution
-            particle.w = math.exp(-(obstacle_dist **2)/ (2* self.sigma **2))
+                # gaussian likelihood of this one beam
+                total += math.exp(-(obstacle_dist ** 2) / (2 * self.sigma ** 2))
+
+            # average over beams then cube to sharpen good vs bad particles
+            particle.w = (total / len(beams)) ** 3
 
 
     def update_initial_pose(self, msg):
