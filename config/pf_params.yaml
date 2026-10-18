@@ -1,0 +1,19 @@
+# Default tuning for the particle filter (robot_localization/pf.py).
+# Override any value at launch, e.g.:
+#   ros2 launch robot_localization test_pf.py map_yaml:=<map.yaml> params_file:=<your_params.yaml>
+# Angles are in degrees; distances are in meters.
+my_pf:
+  ros__parameters:
+    n_particles: 300            # number of particles in the cloud
+    d_thresh: 0.2               # linear movement before a filter update
+    a_thresh_deg: 30.0          # turning before a filter update
+    init_xy_sigma: 0.3          # std dev of initial x/y spread around the guess
+    init_theta_sigma_deg: 20.0  # std dev of initial heading spread
+    odom_xy_noise: 0.02         # std dev of per-particle motion noise
+    odom_theta_noise_deg: 3.0   # std dev of per-particle turn noise
+    sigma: 0.25                 # std dev of the laser likelihood Gaussian
+    beam_step: 10               # use every beam_step-th lidar beam for weighting
+    resample_xy_sigma: 0.05     # jitter added to resampled particles
+    resample_theta_sigma_deg: 5.0  # heading jitter added when resampling
+    random_frac: 0.05           # fraction of particles re-drawn uniformly each resample
+    cluster_radius: 0.5         # particles this close to the best one form the pose estimate

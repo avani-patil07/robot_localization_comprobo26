@@ -9,6 +9,10 @@ import os
 
 def generate_launch_description():
     map_file = DeclareLaunchArgument('map_yaml')
+    params_file = DeclareLaunchArgument(
+        'params_file',
+        default_value=os.path.join(get_package_share_directory('robot_localization'), 'config', 'pf_params.yaml'),
+        description='YAML file with the particle filter tuning parameters')
 
     lifecycle_nodes = ['map_server']
     use_sim_time = DeclareLaunchArgument('use_sim_time', default_value="true")
@@ -27,6 +31,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         map_file,
+        params_file,
         use_sim_time,
         Node(
             package='nav2_map_server',
@@ -38,7 +43,8 @@ def generate_launch_description():
         Node(package='robot_localization',
              executable='pf.py',
              name='my_pf',
-             parameters=[{'use_sim_time': LaunchConfiguration('use_sim_time')}],
+             parameters=[LaunchConfiguration('params_file'),
+                         {'use_sim_time': LaunchConfiguration('use_sim_time')}],
              emulate_tty=True,  # https://github.com/ros2/launch/issues/188
              output='screen'),
         start_lifecycle_manager
